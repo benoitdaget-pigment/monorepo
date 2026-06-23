@@ -1,0 +1,58 @@
+name: Sync BdF FX rates to Pigment
+
+on:
+  # Runs on the 5th of each month at 08:00 UTC
+  # (BdF publishes the prior month's average rates around the 3rd-4th)
+  schedule:
+    - cron: "0 8 5 * *"
+
+  # Allow manual trigger with a custom period
+  workflow_dispatch:
+    inputs:
+      period:
+        description: "Month to sync (YYYY-MM). Defaults to previous month."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run (print payload, do not write to Pigment)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+jobs:
+  sync-fx-rates:
+    name: Sync exchange rates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Resolve target period
+        id: period
+        run: |
+          if [ -n "${{ github.event.inputs.period }}" ]; then
+            echo "value=${{ github.event.inputs.period }}" >> "$GITHUB_OUTPUT"
+          else
+            # Default: previous month (script is run on the 5th, syncing the month that just closed)
+            echo "value=$(date -d 'last month' +'%Y-%m')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run sync
+        env:
+          PIGMENT_API_KEY: ${{ secrets.PIGMENT_API_KEY }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python scripts/bdf_fx_sync.py --period "${{ steps.period.outputs.value }}" $DRY_RUN_FLAG
