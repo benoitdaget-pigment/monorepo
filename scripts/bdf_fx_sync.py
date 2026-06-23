@@ -99,12 +99,15 @@ def compute_rates(
     """
     month_prefix = f"{year}-{month:02d}-"
     last_day = monthrange(year, month)[1]
+    ytd_start  = f"{year}-01-01"
     ytd_cutoff = f"{year}-{month:02d}-{last_day:02d}"
 
     mtd_vals = [v[currency] for d, v in all_daily.items()
                 if d.startswith(month_prefix) and currency in v]
+    # YTD must be bounded on both sides: the data source can return a trailing
+    # observation from the previous December, which must not leak into the average.
     ytd_vals = [v[currency] for d, v in all_daily.items()
-                if d <= ytd_cutoff and currency in v]
+                if ytd_start <= d <= ytd_cutoff and currency in v]
 
     month_days = sorted(d for d in all_daily if d.startswith(month_prefix))
     closing = all_daily[month_days[-1]].get(currency) if month_days else None
