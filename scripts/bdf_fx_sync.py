@@ -5,25 +5,35 @@ Sync official EUR exchange rates into Pigment [AUDAX Financial Consolidation].
 Source: Frankfurter API (api.frankfurter.app) which distributes the official
 ECB/BdF EUR reference rates published each business day.
 
-Three rate types are computed and pushed into the "01. Exchange rates" metric:
+Three rate types are computed and pushed into the "INP_FX_Exchange rates"
+input metric (Data Hub app):
 
   - MTD Average rate : mean of daily rates within the target month
   - YTD Average rate : mean of daily rates from Jan 1 of the year to
                        the last business day of the target month
   - Closing rate     : last available daily rate of the target month
 
+Data is delivered to Pigment through the Import API (CSV push). Pigment has
+no direct "write metric value" endpoint; instead a CSV is POSTed to a
+pre-configured Import Configuration which routes the data to the target
+metric. See https://kb.pigment.com/docs/trigger-import-apis
+
 Usage:
     python bdf_fx_sync.py --period 2026-01
     python bdf_fx_sync.py --period 2026-01 --dry-run
 
-Required environment variable:
-    PIGMENT_API_KEY   Pigment API key (Settings > API Keys in Pigment)
+Required environment variables:
+    PIGMENT_API_KEY            Pigment API key (Integrations > API Keys)
+    PIGMENT_IMPORT_CONFIG_ID   Import Configuration ID of the import block
+                               feeding INP_FX_Exchange rates
 """
 
 import argparse
-import json
+import csv
+import io
 import os
 import sys
+import time
 from calendar import monthrange
 from datetime import date
 from statistics import mean
@@ -36,9 +46,8 @@ import requests
 
 FRANKFURTER_API = "https://api.frankfurter.app"
 
-PIGMENT_API_BASE = "https://api.pigment.com/v1"
-PIGMENT_APP_ID   = "d8d6ad88-359c-476a-b654-bafb1fe4c36f"
-PIGMENT_METRIC_ID = "04f62501-fcc3-42c7-8fcf-1d308cae58c2"
+# Pigment Import API (https://kb.pigment.com/docs/trigger-import-apis)
+PIGMENT_API_BASE = "https://pigment.app/api/v1"
 
 # Currencies to sync (ISO code -> Pigment display name)
 CURRENCIES = {
@@ -48,11 +57,12 @@ CURRENCIES = {
 }
 EUR_DISPLAY_NAME = "EUR - Euro"
 
-# Pigment dimension names (order must match what the API expects)
-DIM_RATE_TYPE = "Currency translation rate"
-DIM_MONTH     = "Month"
-DIM_VERSION   = "Exchange rate version"
-DIM_CURRENCY  = "Currency"
+# CSV column headers — must match the import block's column mapping in Pigment.
+COL_RATE_TYPE = "Currency translation rate"
+COL_MONTH     = "Month"
+COL_VERSION   = "Exchange rate version"
+COL_CURRENCY  = "Currency"
+COL_VALUE     = "Value"
 
 PIGMENT_VERSION = "Actual Current Year"
 
@@ -124,50 +134,77 @@ def compute_rates(
 # ---------------------------------------------------------------------------
 
 def period_to_pigment_month(year: int, month: int) -> str:
-    """Convert year/month to the Pigment month label, e.g. "Jan-26"."""
-    return date(year, month, 1).strftime("%b-%y")
+    """Convert year/month to the Pigment month label, e.g. "Jan 26"."""
+    return date(year, month, 1).strftime("%b %y")
 
 
 # ---------------------------------------------------------------------------
-# Pigment injection
+# CSV building
 # ---------------------------------------------------------------------------
 
-def push_to_pigment(rows: list[dict], api_key: str, dry_run: bool = False) -> None:
-    """
-    Push exchange rate rows to Pigment via the REST API.
+def build_csv(rows: list[dict]) -> str:
+    """Render the rows as a CSV string with a header line."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([COL_RATE_TYPE, COL_MONTH, COL_VERSION, COL_CURRENCY, COL_VALUE])
+    for r in rows:
+        rate_type, month, version, currency = r["dimension_values"]
+        writer.writerow([rate_type, month, version, currency, r["metric_value"]])
+    return buf.getvalue()
 
-    Each row:
-        { "dimension_values": [rate_type, month, version, currency],
-          "metric_value": float }
-    """
-    payload = {
-        "metricId": PIGMENT_METRIC_ID,
-        "dimensionDisplayNames": [DIM_RATE_TYPE, DIM_MONTH, DIM_VERSION, DIM_CURRENCY],
-        "rows": [
-            {
-                "dimensionValues": r["dimension_values"],
-                "metricValue": {"type": "Decimal", "value": r["metric_value"]},
-            }
-            for r in rows
-        ],
-    }
 
+# ---------------------------------------------------------------------------
+# Pigment injection — Import API (CSV push)
+# ---------------------------------------------------------------------------
+
+def push_to_pigment(
+    csv_body: str,
+    api_key: str,
+    config_id: str,
+    dry_run: bool = False,
+) -> None:
+    """Push the CSV to Pigment via the Import API and poll for completion."""
     if dry_run:
-        print("[DRY RUN] Payload that would be sent to Pigment:")
-        print(json.dumps(payload, indent=2))
+        print("[DRY RUN] CSV that would be pushed to Pigment:")
+        print(csv_body)
         return
 
-    url = (
-        f"{PIGMENT_API_BASE}/applications/{PIGMENT_APP_ID}"
-        f"/metrics/{PIGMENT_METRIC_ID}/inputs"
-    )
+    push_url = f"{PIGMENT_API_BASE}/import/push/csv?configurationId={config_id}"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type":  "application/json",
+        "Content-Type":  "text/csv",
     }
-    resp = requests.post(url, json=payload, headers=headers, timeout=30)
+    resp = requests.post(
+        push_url, data=csv_body.encode("utf-8"), headers=headers, timeout=60
+    )
     resp.raise_for_status()
-    print(f"[OK] {len(rows)} values pushed to Pigment.")
+    import_id = resp.json().get("importId")
+    print(f"[OK] CSV pushed. importId={import_id}")
+
+    if not import_id:
+        return
+
+    # Poll import status until it leaves InProgress (max ~60s).
+    status_url = (
+        f"{PIGMENT_API_BASE}/import/{import_id}/status?includedDetailedReport=true"
+    )
+    for _ in range(20):
+        time.sleep(3)
+        s = requests.get(status_url, headers={"Authorization": f"Bearer {api_key}"},
+                         timeout=30)
+        s.raise_for_status()
+        body = s.json()
+        status = body.get("importStatus")
+        if status == "InProgress":
+            continue
+        if status == "Completed":
+            summary = body.get("detailedReport", {}).get("summary", {})
+            print(f"[OK] Import completed. {summary}")
+            return
+        # Failed
+        print(f"[ERROR] Import failed: {body.get('errorsDetails')}", file=sys.stderr)
+        sys.exit(1)
+    print("[WARN] Import still InProgress after polling window.", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +221,19 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the payload without writing to Pigment",
+        help="Print the CSV without writing to Pigment",
     )
     args = parser.parse_args()
 
     api_key = os.environ.get("PIGMENT_API_KEY")
-    if not api_key and not args.dry_run:
-        print("ERROR: PIGMENT_API_KEY environment variable is required.", file=sys.stderr)
-        sys.exit(1)
+    config_id = os.environ.get("PIGMENT_IMPORT_CONFIG_ID")
+    if not args.dry_run:
+        if not api_key:
+            print("ERROR: PIGMENT_API_KEY environment variable is required.", file=sys.stderr)
+            sys.exit(1)
+        if not config_id:
+            print("ERROR: PIGMENT_IMPORT_CONFIG_ID environment variable is required.", file=sys.stderr)
+            sys.exit(1)
 
     year, month = map(int, args.period.split("-"))
     pigment_month = period_to_pigment_month(year, month)
@@ -229,7 +271,8 @@ def main() -> None:
         })
 
     print(f"\nTotal: {len(rows)} values to push.")
-    push_to_pigment(rows, api_key, dry_run=args.dry_run)
+    csv_body = build_csv(rows)
+    push_to_pigment(csv_body, api_key, config_id, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

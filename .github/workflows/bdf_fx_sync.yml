@@ -47,6 +47,7 @@ jobs:
       - name: Run sync
         env:
           PIGMENT_API_KEY: ${{ secrets.PIGMENT_API_KEY }}
+          PIGMENT_IMPORT_CONFIG_ID: ${{ secrets.PIGMENT_IMPORT_CONFIG_ID }}
         run: |
           DRY_RUN_FLAG=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
