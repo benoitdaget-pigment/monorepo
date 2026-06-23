@@ -2,7 +2,7 @@ name: Sync BdF FX rates to Pigment
 
 on:
   # Runs on the 5th of each month at 08:00 UTC
-  # (BdF publishes the prior month's average rates around the 3rd-4th)
+  # (BdF publishes the prior month's rates around the 3rd-4th)
   schedule:
     - cron: "0 8 5 * *"
 
@@ -10,15 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       period:
-        description: "Month to sync (YYYY-MM). Defaults to previous month."
+        description: "Month to sync (YYYY-MM). Leave empty to use previous month."
         required: false
         default: ""
       dry_run:
-        description: "Dry run (print payload, do not write to Pigment)"
+        description: "Set to 'true' to print the payload without writing to Pigment."
         required: false
         default: "false"
-        type: choice
-        options: ["false", "true"]
 
 jobs:
   sync-fx-rates:
@@ -43,7 +41,6 @@ jobs:
           if [ -n "${{ github.event.inputs.period }}" ]; then
             echo "value=${{ github.event.inputs.period }}" >> "$GITHUB_OUTPUT"
           else
-            # Default: previous month (script is run on the 5th, syncing the month that just closed)
             echo "value=$(date -d 'last month' +'%Y-%m')" >> "$GITHUB_OUTPUT"
           fi
 
