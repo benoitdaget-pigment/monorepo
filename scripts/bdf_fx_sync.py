@@ -49,13 +49,14 @@ FRANKFURTER_API = "https://api.frankfurter.app"
 # Pigment Import API (https://kb.pigment.com/docs/trigger-import-apis)
 PIGMENT_API_BASE = "https://pigment.app/api/v1"
 
-# Currencies to sync (ISO code -> Pigment display name)
+# Currencies to sync. The CSV "Currency" column carries the ISO code, which is
+# the matching key of the Pigment import configuration (Currency.Code property).
 CURRENCIES = {
-    "GBP": "GBP - Pound Sterling",
-    "JPY": "JPY - Yen",
-    "USD": "USD - US Dollar",
+    "GBP": "GBP",
+    "JPY": "JPY",
+    "USD": "USD",
 }
-EUR_DISPLAY_NAME = "EUR - Euro"
+EUR_DISPLAY_NAME = "EUR"
 
 # CSV column headers — must match the import block's column mapping in Pigment.
 COL_RATE_TYPE = "Currency translation rate"
