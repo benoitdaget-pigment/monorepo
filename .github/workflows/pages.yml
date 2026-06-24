@@ -1,0 +1,58 @@
+name: Deploy FX audit trail to GitHub Pages
+
+on:
+  # Rebuild whenever a monthly audit report changes on main
+  push:
+    branches: [main]
+    paths:
+      - "data/fx_rates/**"
+      - "scripts/build_fx_site.py"
+      - ".github/workflows/pages.yml"
+  # Allow manual rebuilds
+  workflow_dispatch:
+
+# Permissions required to deploy to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build site
+        run: python scripts/build_fx_site.py --out site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages on first run if not already enabled
+          enablement: true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
