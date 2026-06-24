@@ -23,6 +23,10 @@ jobs:
     name: Sync exchange rates
     runs-on: ubuntu-latest
 
+    # Allow the job to commit the audit trail back to the repository.
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,3 +58,16 @@ jobs:
             DRY_RUN_FLAG="--dry-run"
           fi
           python scripts/bdf_fx_sync.py --period "${{ steps.period.outputs.value }}" $DRY_RUN_FLAG
+
+      - name: Commit audit trail
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/fx_rates/
+          if git diff --cached --quiet; then
+            echo "No audit-trail changes to commit."
+          else
+            git commit -m "Add FX daily-rate audit trail for ${{ steps.period.outputs.value }}"
+            git push
+          fi

@@ -72,6 +72,10 @@ RATE_MTD_AVG = "MTD Average rate"
 RATE_YTD_AVG = "YTD Average rate"
 RATE_CLOSING = "Closing rate"
 
+# Directory where the per-month daily-rate audit trails are stored (committed to
+# the repository so statutory auditors can verify the MTD/YTD computations).
+AUDIT_DIR = "data/fx_rates"
+
 
 # ---------------------------------------------------------------------------
 # Frankfurter fetch — daily rates
@@ -152,6 +156,71 @@ def build_csv(rows: list[dict]) -> str:
         rate_type, month, version, currency = r["dimension_values"]
         writer.writerow([rate_type, month, version, currency, r["metric_value"]])
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Audit trail — daily rates used for the MTD/YTD computations
+# ---------------------------------------------------------------------------
+
+def write_audit_csv(
+    all_daily: dict[str, dict[str, float]],
+    year: int,
+    month: int,
+    computed: dict[str, dict[str, float | None]],
+) -> str:
+    """
+    Write the daily reference rates that feed the MTD/YTD averages to
+    data/fx_rates/<period>.csv, plus the resulting computed rates.
+
+    Every daily rate from Jan 1 to the last day of the target month is listed
+    (the YTD window). The "In MTD month" column flags the subset used for the
+    MTD average. This lets auditors recompute both averages from the raw data.
+    """
+    last_day = monthrange(year, month)[1]
+    month_prefix = f"{year}-{month:02d}-"
+    ytd_start  = f"{year}-01-01"
+    ytd_cutoff = f"{year}-{month:02d}-{last_day:02d}"
+    codes = list(CURRENCIES.keys())
+
+    os.makedirs(AUDIT_DIR, exist_ok=True)
+    path = os.path.join(AUDIT_DIR, f"{year}-{month:02d}.csv")
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            f"# EUR daily reference rates (ECB/BdF, via Frankfurter API) — "
+            f"audit trail for {period_to_pigment_month(year, month)}"
+        ])
+        w.writerow([
+            f"# YTD window: {ytd_start} .. {ytd_cutoff}   "
+            f"MTD window: {year}-{month:02d}-01 .. {ytd_cutoff}"
+        ])
+        w.writerow(["# Rates expressed as 1 EUR = X foreign currency."])
+        w.writerow([])
+
+        # Daily detail
+        w.writerow(["Date", "In MTD month"] + codes)
+        for d in sorted(all_daily):
+            if not (ytd_start <= d <= ytd_cutoff):
+                continue
+            row = [d, "yes" if d.startswith(month_prefix) else "no"]
+            for c in codes:
+                v = all_daily[d].get(c)
+                row.append(f"{v:.6f}" if v is not None else "")
+            w.writerow(row)
+
+        # Computed results
+        w.writerow([])
+        w.writerow(["Computed rate"] + codes)
+        for label in (RATE_MTD_AVG, RATE_YTD_AVG, RATE_CLOSING):
+            row = [label]
+            for c in codes:
+                v = computed[c].get(label)
+                row.append(f"{v:.6f}" if v is not None else "")
+            w.writerow(row)
+
+    print(f"[OK] Audit trail written to {path}")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +330,11 @@ def main() -> None:
     print(f"  → {len(all_daily)} business days retrieved")
 
     rows: list[dict] = []
+    computed: dict[str, dict[str, float | None]] = {}
 
     for code, display_name in CURRENCIES.items():
         rates = compute_rates(all_daily, code, year, month)
+        computed[code] = rates
         for rate_label, value in rates.items():
             if value is None:
                 print(f"  WARNING: could not compute {rate_label} for {code}", file=sys.stderr)
@@ -281,6 +352,9 @@ def main() -> None:
             "dimension_values": [rate_label, pigment_month, PIGMENT_VERSION, EUR_DISPLAY_NAME],
             "metric_value": 1.0,
         })
+
+    # Write the auditor-facing daily-rate trail (always, even in dry-run).
+    write_audit_csv(all_daily, year, month, computed)
 
     print(f"\nTotal: {len(rows)} values to push.")
     csv_body = build_csv(rows)
