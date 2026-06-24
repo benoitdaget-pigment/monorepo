@@ -198,8 +198,19 @@ def push_to_pigment(
         if status == "InProgress":
             continue
         if status == "Completed":
-            summary = body.get("detailedReport", {}).get("summary", {})
+            report = body.get("detailedReport", {})
+            summary = report.get("summary", {})
             print(f"[OK] Import completed. {summary}")
+            # Surface skipped-row diagnostics, if any.
+            for block in report.get("impactedBlocks", []):
+                for skip in block.get("skippedData", []):
+                    print(
+                        f"  SKIPPED {skip.get('count')} row(s) — "
+                        f"reason={skip.get('reason')} "
+                        f"column={skip.get('sourceColumnName')} "
+                        f"samples={skip.get('samples')}",
+                        file=sys.stderr,
+                    )
             return
         # Failed
         print(f"[ERROR] Import failed: {body.get('errorsDetails')}", file=sys.stderr)
