@@ -1,10 +1,10 @@
 name: Sync BdF FX rates to Pigment
 
 on:
-  # Runs on the 5th of each month at 08:00 UTC
+  # Runs on the 3rd of each month at 08:00 UTC
   # (BdF publishes the prior month's rates around the 3rd-4th)
   schedule:
-    - cron: "0 8 5 * *"
+    - cron: "0 8 3 * *"
 
   # Allow manual trigger with a custom period
   workflow_dispatch:
