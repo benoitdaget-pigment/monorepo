@@ -223,6 +223,111 @@ def write_audit_csv(
     return path
 
 
+def write_audit_html(
+    all_daily: dict[str, dict[str, float]],
+    year: int,
+    month: int,
+    computed: dict[str, dict[str, float | None]],
+) -> str:
+    """
+    Write a human-friendly HTML version of the audit trail to
+    data/fx_rates/<period>.html, with the MTD subset highlighted and the
+    computed rates summarised at the top.
+    """
+    import html as _html
+
+    last_day = monthrange(year, month)[1]
+    month_prefix = f"{year}-{month:02d}-"
+    ytd_start  = f"{year}-01-01"
+    ytd_cutoff = f"{year}-{month:02d}-{last_day:02d}"
+    codes = list(CURRENCIES.keys())
+    label = period_to_pigment_month(year, month)
+
+    def cell(v: float | None) -> str:
+        return f"{v:.6f}" if v is not None else "—"
+
+    # Summary table rows
+    summary_rows = ""
+    for rate_label in (RATE_MTD_AVG, RATE_YTD_AVG, RATE_CLOSING):
+        cells = "".join(f"<td>{cell(computed[c].get(rate_label))}</td>" for c in codes)
+        summary_rows += f"<tr><th>{_html.escape(rate_label)}</th>{cells}</tr>\n"
+
+    # Daily detail rows
+    daily_rows = ""
+    for d in sorted(all_daily):
+        if not (ytd_start <= d <= ytd_cutoff):
+            continue
+        in_month = d.startswith(month_prefix)
+        cells = "".join(f"<td>{cell(all_daily[d].get(c))}</td>" for c in codes)
+        flag = "✓" if in_month else ""
+        cls = ' class="mtd"' if in_month else ""
+        daily_rows += f"<tr{cls}><td>{d}</td><td class=\"flag\">{flag}</td>{cells}</tr>\n"
+
+    code_headers = "".join(f"<th>{_html.escape(c)}</th>" for c in codes)
+
+    doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EUR FX rates — {_html.escape(label)}</title>
+<style>
+  body {{ font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+         margin: 2rem; color: #1a1a2e; background: #f7f8fa; }}
+  h1 {{ font-size: 1.4rem; margin-bottom: 0.2rem; }}
+  .meta {{ color: #555; font-size: 0.85rem; margin-bottom: 1.5rem; }}
+  .meta code {{ background: #eceef2; padding: 0.1rem 0.3rem; border-radius: 3px; }}
+  table {{ border-collapse: collapse; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+          margin-bottom: 2rem; }}
+  th, td {{ padding: 0.45rem 0.9rem; text-align: right; border-bottom: 1px solid #eceef2;
+           font-variant-numeric: tabular-nums; }}
+  thead th {{ background: #1a1a2e; color: #fff; text-align: right; position: sticky; top: 0; }}
+  tbody th {{ text-align: left; font-weight: 600; }}
+  td:first-child, th:first-child {{ text-align: left; }}
+  .flag {{ text-align: center; color: #2a9d4a; font-weight: 700; }}
+  tr.mtd {{ background: #f0f8f1; }}
+  caption {{ caption-side: top; text-align: left; font-weight: 600; padding: 0.5rem 0; }}
+  .legend {{ font-size: 0.8rem; color: #555; }}
+  .legend .swatch {{ display: inline-block; width: 0.9rem; height: 0.9rem;
+                    background: #f0f8f1; border: 1px solid #cde; vertical-align: middle; }}
+</style>
+</head>
+<body>
+<h1>EUR exchange rates — {_html.escape(label)}</h1>
+<div class="meta">
+  Source: ECB / Banque de France daily reference rates (via Frankfurter API).<br>
+  Rates expressed as <strong>1 EUR = X foreign currency</strong>.<br>
+  YTD window: <code>{ytd_start}</code> → <code>{ytd_cutoff}</code> &nbsp;·&nbsp;
+  MTD window: <code>{year}-{month:02d}-01</code> → <code>{ytd_cutoff}</code>
+</div>
+
+<table>
+  <caption>Computed rates pushed to Pigment</caption>
+  <thead><tr><th>Rate</th>{code_headers}</tr></thead>
+  <tbody>
+{summary_rows}  </tbody>
+</table>
+
+<table>
+  <caption>Daily reference rates used in the averages</caption>
+  <thead><tr><th>Date</th><th>MTD</th>{code_headers}</tr></thead>
+  <tbody>
+{daily_rows}  </tbody>
+</table>
+<p class="legend"><span class="swatch"></span> Highlighted rows (MTD ✓) are the
+days within {_html.escape(label)} used for the MTD average. All listed rows form
+the YTD average window.</p>
+</body>
+</html>
+"""
+
+    os.makedirs(AUDIT_DIR, exist_ok=True)
+    path = os.path.join(AUDIT_DIR, f"{year}-{month:02d}.html")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(doc)
+    print(f"[OK] Audit trail (HTML) written to {path}")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Pigment injection — Import API (CSV push)
 # ---------------------------------------------------------------------------
@@ -355,6 +460,7 @@ def main() -> None:
 
     # Write the auditor-facing daily-rate trail (always, even in dry-run).
     write_audit_csv(all_daily, year, month, computed)
+    write_audit_html(all_daily, year, month, computed)
 
     print(f"\nTotal: {len(rows)} values to push.")
     csv_body = build_csv(rows)
